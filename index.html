@@ -1,0 +1,150 @@
+<html lang="ja">
+<body>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.11.2/moment.min.js" type="text/javascript"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.2/components/core-min.js" type="text/javascript"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.2/components/hmac-min.js" type="text/javascript"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.2/components/sha256-min.js" type="text/javascript"></script>
+  <script src="https://code.jquery.com/jquery-2.2.2.min.js"   integrity="sha256-36cp2Co+/62rEAAYHLmRCPIych47CvdM+uTBJwSzWjI="   crossorigin="anonymous"></script>
+  <script src="./mqttws31.js" type="text/javascript"></script>
+  <script src="http://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+  <script src="./dist/js/epoch.min.js"></script>
+  <link rel="stylesheet" type="text/css" href="./dist/css/epoch.min.css">
+  <script type="text/javascript">
+    var RealTimeData = function(layers) {
+        this.layers = layers;
+        this.timestamp = ((new Date()).getTime() / 1000)|0;
+    };
+
+
+    RealTimeData.prototype.history = function(entries) {
+        if (typeof(entries) != 'number' || !entries) {
+            entries = 1;
+        }
+
+        var history = [];
+        for (var k = 0; k < this.layers; k++) {
+            history.push({ values: [] });
+        }
+
+        for (var i = 0; i < entries; i++) {
+            for (var j = 0; j < this.layers; j++) {
+                history[j].values.push({time: this.timestamp, y: 10});
+            }
+            this.timestamp++;
+        }
+
+        return history;
+    };
+
+    RealTimeData.prototype.next = function(y) {
+        var entry = [];
+        for (var i = 0; i < this.layers; i++) {
+            entry.push({ time: this.timestamp, y: y });
+        }
+        this.timestamp++;
+        return entry;
+    }
+
+    window.RealTimeData = RealTimeData;
+
+
+$(function(){
+
+  var data = new RealTimeData(1);
+
+  var chart = $('#lineChart')
+   .epoch({
+        type: 'time.line',
+        data: data.history(),
+        axes: ['left', 'bottom']
+    });
+
+    var data_v = {
+      messages: []
+    };
+ 
+    function SigV4Utils(){}
+ 
+    SigV4Utils.sign = function(key, msg) {
+      var hash = CryptoJS.HmacSHA256(msg, key);
+      return hash.toString(CryptoJS.enc.Hex);
+    };
+ 
+    SigV4Utils.sha256 = function(msg) {
+      var hash = CryptoJS.SHA256(msg);
+      return hash.toString(CryptoJS.enc.Hex);
+    };
+ 
+    SigV4Utils.getSignatureKey = function(key, dateStamp, regionName, serviceName) {
+      var kDate = CryptoJS.HmacSHA256(dateStamp, 'AWS4' + key);
+      var kRegion = CryptoJS.HmacSHA256(regionName, kDate);
+      var kService = CryptoJS.HmacSHA256(serviceName, kRegion);
+      var kSigning = CryptoJS.HmacSHA256('aws4_request', kService);
+      return kSigning;
+    };
+ 
+    function createEndpoint(regionName, awsIotEndpoint, accessKey, secretKey) {
+      var time = moment.utc();
+      var dateStamp = time.format('YYYYMMDD');
+      var amzdate = dateStamp + 'T' + time.format('HHmmss') + 'Z';
+      var service = 'iotdevicegateway';
+      var region = regionName;
+      var secretKey = secretKey;
+      var accessKey = accessKey;
+      var algorithm = 'AWS4-HMAC-SHA256';
+      var method = 'GET';
+      var canonicalUri = '/mqtt';
+      var host = awsIotEndpoint;
+ 
+      var credentialScope = dateStamp + '/' + region + '/' + service + '/' + 'aws4_request';
+      var canonicalQuerystring = 'X-Amz-Algorithm=AWS4-HMAC-SHA256';
+      canonicalQuerystring += '&X-Amz-Credential=' + encodeURIComponent(accessKey + '/' + credentialScope);
+      canonicalQuerystring += '&X-Amz-Date=' + amzdate;
+      canonicalQuerystring += '&X-Amz-SignedHeaders=host';
+ 
+      var canonicalHeaders = 'host:' + host + '\n';
+      var payloadHash = SigV4Utils.sha256('');
+      var canonicalRequest = method + '\n' + canonicalUri + '\n' + canonicalQuerystring + '\n' + canonicalHeaders + '\nhost\n' + payloadHash;
+ 
+      var stringToSign = algorithm + '\n' +  amzdate + '\n' +  credentialScope + '\n' +  SigV4Utils.sha256(canonicalRequest);
+      var signingKey = SigV4Utils.getSignatureKey(secretKey, dateStamp, region, service);
+      var signature = SigV4Utils.sign(signingKey, stringToSign);
+ 
+      canonicalQuerystring += '&X-Amz-Signature=' + signature;
+      return 'wss://' + host + canonicalUri + '?' + canonicalQuerystring;
+    }
+ 
+    var endpoint = createEndpoint(
+        'us-east-1', // Your Region
+        '<aws iot endpoint>', // Require 'lowercamelcase'!!
+        '<YOUR_AWS_ACCESS_KEY>',
+        '<YOUR_AWS_SECRET_ACCESS_KEY>');
+    var clientId = Math.random().toString(36).substring(7);
+    var client = new Paho.MQTT.Client(endpoint, clientId);
+    var connectOptions = {
+      useSSL: true,
+      timeout: 3,
+      mqttVersion: 4,
+      onSuccess: subscribe
+    };
+    client.connect(connectOptions);
+    client.onMessageArrived = onMessage;
+    client.onConnectionLost = function(e) { console.log(e) };
+ 
+    function subscribe() {
+      client.subscribe("topic_2");
+      console.log("subscribed");
+    }
+ 
+    function onMessage(message) {
+      console.log("message received: " + message.payloadString);
+      chart.push(data.next(JSON.parse(message.payloadString).mode1Process));
+    }
+});
+  </script>
+  <div id="lineChart" class="epoch" style="width: 100%; height: 100px;border:solid 1px #C0C0C0;"></div>
+<script>
+
+</script>
+</body>
+</html>
